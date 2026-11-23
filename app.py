@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from mipid.detector import train_detector, predict_prompts
+from mipid.detector import load_detector, predict_prompts
 from mipid.explanations import attack_category
 from mipid.language import detect_language
 from mipid.batch import analyze_batch
@@ -22,27 +22,24 @@ st.set_page_config(
 )
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
-SAMPLE_DATASET = DATA_DIR / "sample_dataset.csv"
-TEST_DATASET = DATA_DIR / "test_prompts.csv"
+EXPERIMENTS_DIR = BASE_DIR / "experiments"
+
+MODEL_PATH = EXPERIMENTS_DIR / "best_model.joblib"
+VALIDATION_RESULTS = EXPERIMENTS_DIR / "validation_comparison.csv"
+FINAL_RESULTS = EXPERIMENTS_DIR / "final_test_results.csv"
+CONFUSION_MATRIX = EXPERIMENTS_DIR / "confusion_matrix.csv"
 
 
 # --------------------------------------------------
-# Data and model loading
+# Model loading
 # --------------------------------------------------
-
-@st.cache_data
-def load_data():
-    return pd.read_csv(SAMPLE_DATASET)
-
 
 @st.cache_resource
-def train_model():
-    return train_detector(str(SAMPLE_DATASET))
+def load_model():
+    return load_detector()
 
 
-data = load_data()
-model = train_model()
+model = load_model()
 
 
 # --------------------------------------------------
@@ -53,7 +50,7 @@ st.title("🛡️ MIPID")
 st.subheader("Multilingual Injection & Prompt Integrity Detector")
 
 st.caption(
-    "Research prototype • Character n-gram TF-IDF + calibrated linear SVM"
+    "Research prototype • Character n-gram TF-IDF + Linear SVM"
 )
 
 with st.sidebar:
@@ -69,8 +66,8 @@ with st.sidebar:
     )
 
     st.warning(
-        "Small demonstration dataset. Predictions and scores are estimates, "
-        "not guarantees of security."
+        "Research prototype. Model scores are indicative, not calibrated "
+        "probabilities or guarantees of security."
     )
 
 
@@ -837,145 +834,84 @@ with tab2:
 
 
 # ==================================================
-# TAB 3: BASELINE EVALUATION
+# TAB 3: MODEL EVALUATION
 # ==================================================
 
 with tab3:
 
-    st.subheader(
-        "Baseline Model Evaluation"
+    st.subheader("Model Evaluation")
+
+    st.markdown(
+        "Results from the full-dataset classifier comparison "
+        "and the final untouched test set."
     )
 
-    if TEST_DATASET.exists():
+    if FINAL_RESULTS.exists():
 
-        test_df = pd.read_csv(
-            TEST_DATASET
-        )
+        results_df = pd.read_csv(FINAL_RESULTS)
 
-        if {
-            "text",
-            "expected_label",
-        }.issubset(test_df.columns):
+        if not results_df.empty:
 
-            test_df = test_df.dropna(
-                subset=[
-                    "text",
-                    "expected_label",
-                ]
-            ).copy()
+            result = results_df.iloc[0]
 
-            valid = (
-                test_df[
-                    "expected_label"
-                ]
-                .astype(str)
-                .str.lower()
-                .isin(
-                    [
-                        "benign",
-                        "injection",
-                    ]
-                )
+            st.subheader("Final Test Results")
+
+            c1, c2, c3, c4 = st.columns(4)
+
+            c1.metric("Accuracy", f"{result['Accuracy']:.2%}")
+            c2.metric("Precision", f"{result['Precision']:.2%}")
+            c3.metric("Recall", f"{result['Recall']:.2%}")
+            c4.metric("F1 Score", f"{result['F1']:.2%}")
+
+            st.success(f"Selected model: {result['Model']}")
+
+            st.caption(
+                "These metrics were calculated on the untouched test split "
+                "after selecting the model using validation F1."
             )
-
-            test_df = test_df[valid]
-
-            if not test_df.empty:
-
-                test_predictions, _ = (
-                    predict_prompts(
-                        model,
-                        test_df["text"]
-                        .astype(str)
-                        .tolist(),
-                    )
-                )
-
-                metrics = evaluate_predictions(
-                    test_df[
-                        "expected_label"
-                    ]
-                    .astype(str)
-                    .str.lower(),
-
-                    test_predictions,
-                )
-
-                c1, c2, c3, c4 = st.columns(4)
-
-                c1.metric(
-                    "Accuracy",
-                    f"{metrics['accuracy']:.1%}",
-                )
-
-                c2.metric(
-                    "Precision",
-                    f"{metrics['precision']:.1%}",
-                )
-
-                c3.metric(
-                    "Recall",
-                    f"{metrics['recall']:.1%}",
-                )
-
-                c4.metric(
-                    "F1 score",
-                    f"{metrics['f1']:.1%}",
-                )
-
-                st.markdown(
-                    "**Confusion Matrix**"
-                )
-
-                st.dataframe(
-                    pd.DataFrame(
-                        metrics[
-                            "confusion_matrix"
-                        ],
-                        index=[
-                            "Actual benign",
-                            "Actual injection",
-                        ],
-                        columns=[
-                            "Predicted benign",
-                            "Predicted injection",
-                        ],
-                    ),
-                    use_container_width=True,
-                )
-
-                st.text(
-                    metrics[
-                        "classification_report"
-                    ]
-                )
-
-                st.caption(
-                    "Results on the labeled CSV. If these prompts "
-                    "were used to design the model or its heuristics, "
-                    "this is not an independent test set."
-                )
-
-            else:
-
-                st.warning(
-                    "No valid labeled test examples found."
-                )
 
         else:
-
-            st.warning(
-                "test_prompts.csv needs 'text' and "
-                "'expected_label' columns."
-            )
+            st.warning("Final test results file is empty.")
 
     else:
-
-        st.info(
-            "Place your labeled test file at "
-            "data/test_prompts.csv to evaluate "
-            "the model against expected labels."
+        st.warning(
+            "Final test results not found. "
+            "Run experiments/compare_models.py first."
         )
+
+    st.divider()
+    st.subheader("Validation Model Comparison")
+
+    if VALIDATION_RESULTS.exists():
+
+        comparison_df = pd.read_csv(VALIDATION_RESULTS)
+
+        st.dataframe(
+            comparison_df,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        if {"Model", "F1"}.issubset(comparison_df.columns):
+            st.markdown("**Validation F1 comparison**")
+            chart_df = comparison_df.set_index("Model")[["F1"]]
+            st.bar_chart(chart_df)
+
+    else:
+        st.info("Validation comparison file not found.")
+
+    st.divider()
+    st.subheader("Final Test Confusion Matrix")
+
+    if CONFUSION_MATRIX.exists():
+        confusion_df = pd.read_csv(CONFUSION_MATRIX)
+        st.dataframe(
+            confusion_df,
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.info("Confusion matrix file not found.")
 
 
 # ==================================================
@@ -986,112 +922,75 @@ with tab4:
 
     st.subheader("Training Dataset")
 
-    st.write(
-        f"Training dataset size: **{len(data)} examples**."
+    st.markdown(
+        "MIPID was trained and evaluated using the original "
+        "Necent multilingual prompt injection dataset from Hugging Face."
     )
 
-    st.dataframe(
-        data,
-        use_container_width=True,
-        hide_index=True,
-    )
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total examples", "1,175,432")
+    c2.metric("Benign examples", "854,099")
+    c3.metric("Injection examples", "321,333")
 
-    # --------------------------------------------------
-    # Dataset statistics
-    # --------------------------------------------------
+    st.caption(
+        "All original dataset rows were retained. The experiment used "
+        "stratified training, validation, and testing splits."
+    )
 
     st.divider()
+    st.subheader("Dataset Split")
 
-    st.subheader("Dataset Coverage")
+    split_data = pd.DataFrame({
+        "Split": ["Training", "Validation", "Testing"],
+        "Examples": [822802, 176315, 176315]
+    })
 
-    col1, col2, col3 = st.columns(3)
+    st.dataframe(split_data, use_container_width=True, hide_index=True)
+    st.bar_chart(split_data.set_index("Split"))
 
-    col1.metric(
-        "Languages",
-        data["language"].nunique()
-        if "language" in data.columns
-        else "N/A",
-    )
+    st.divider()
+    st.subheader("Selected Model")
 
-    col2.metric(
-        "Attack categories",
-        data["attack_type"].nunique()
-        if "attack_type" in data.columns
-        else "N/A",
-    )
-
-    col3.metric(
-        "Injection examples",
-        int(
-            (
-                data["label"]
-                == "injection"
-            ).sum()
-        )
-        if "label" in data.columns
-        else "N/A",
-    )
-
-    if "language" in data.columns:
-
-        st.markdown(
-            "**Examples by language**"
-        )
-
-        language_counts = (
-            data["language"]
-            .value_counts()
-            .sort_values(
-                ascending=False
-            )
-        )
-
-        st.bar_chart(
-            language_counts
-        )
-
-    if "attack_type" in data.columns:
-
-        st.markdown(
-            "**Examples by attack category**"
-        )
-
-        attack_counts = (
-            data["attack_type"]
-            .value_counts()
-            .sort_values(
-                ascending=False
-            )
-        )
-
-        st.bar_chart(
-            attack_counts
-        )
-
-    # --------------------------------------------------
-    # Limitations
-    # --------------------------------------------------
+    st.write("**Linear Support Vector Machine (Linear SVM)**")
 
     st.markdown(
         """
-### Current limitations
+        - Character-level TF-IDF feature extraction
+        - Character n-gram range: 2–5
+        - Maximum features: 300,000
+        - Classifier: Linear SVM
+        - Class weighting: balanced
+        """
+    )
 
-- The training dataset is manually curated and relatively small.
-- Language detection is based on script clues, not robust language identification.
-- Attack categories and matched terms are heuristic.
-- Model scores are not guarantees of safety.
-- Evaluation on hand-written examples does not establish real-world performance.
-- Translations and paraphrases should be grouped before train/test splitting to
-  prevent data leakage.
-- The multilingual examples are intended as a research demonstration rather
-  than a production-grade multilingual benchmark.
+    st.divider()
+    st.subheader("Research Limitations")
 
-### Planned research steps
+    st.markdown(
+            """
+            - Strong performance on this dataset does not guarantee detection
+            of every real-world prompt injection.
+            - The final test results measure performance on a held-out split
+            of the same source dataset, not an independent dataset.
+            - The displayed SVM score is a transformed decision margin,
+            not a calibrated probability.
+            - Language detection and attack-category explanations use
+            separate heuristic modules.
+            - Multilingual and code-switched performance should be evaluated
+            separately.
+            - False positives may block legitimate prompts, while false
+            negatives may allow malicious prompts through.
+            """
+        )
 
-1. Expand and validate the dataset.
-2. Compare the baseline against other classifiers.
-3. Evaluate per-language and code-switched performance.
-4. Investigate robust explanations and adversarial transformations.
-5. Compare against a multilingual transformer such as XLM-RoBERTa.
-"""
+    st.divider()
+    st.subheader("Saved Experiment Files")
+
+    st.markdown(
+        """
+        - `experiments/best_model.joblib` — trained Linear SVM and TF-IDF vectorizer
+        - `experiments/validation_comparison.csv` — validation model comparison
+        - `experiments/final_test_results.csv` — final test metrics
+        - `experiments/confusion_matrix.csv` — final test confusion matrix
+        """
     )
